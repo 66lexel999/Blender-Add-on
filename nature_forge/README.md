@@ -36,9 +36,10 @@ Recognised maps (any common naming: `_basecolor`, `_albedo`, `_Color`, `_nrm`, `
 * **Normal maps**: OpenGL is the default. A file named DX/DirectX, or an `info.json` that says so, flips the green
   channel automatically. You can also toggle it per layer.
 * **Gloss** maps are inverted to roughness automatically.
-* **info.json**: when it has clear keys like `displacement` / `depth`, `size` / `real_size`, `category`, `name` or
-  `normal: "DirectX"`, the first time you apply that set its depth and tile size are used. What was found is shown
-  under the preview.
+* **info.json**: a `files` list (`{"color": "color.jpg", "height": "height.png", ...}`) decides which file is which
+  map. `normal_src` (`gl` / `dx`) sets the normal convention, and `h_mean` becomes the displacement mid level. Clear
+  keys like `displacement` / `depth`, `size` / `real_size`, `category` or `name` are used the first time you apply
+  that set. What was found is shown under the preview.
 
 The scan is cached, so Blender starts instantly. Press the refresh button after you add new materials, or enable
 *Scan on Startup* in the add-on preferences.
@@ -71,6 +72,27 @@ offers starting points:
 
 Values can also be edited (or keyframed) in the normal modifier panel. *Reset* in each section restores its
 defaults.
+
+## 2b. Step by Step (the hand-made / tutorial workflow)
+
+When you'd rather build it by hand, **Forge > Step by Step** walks you through the classic workflow from the
+tutorials. Each step is one button, everything stays a normal Blender modifier, and you can go **Back / Next** at
+any time:
+
+| Step | Button | What happens | What you can tweak |
+|---|---|---|---|
+| Start | **Rock / Cliff / Slab / Pillar** or **Use 'your mesh'** | a block at the 3D cursor (or your own model) | — |
+| 1 Blockout | **Add Remesh + Clouds** | voxel Remesh + Displace with a Clouds texture: one lumpy, solid rock mass | voxel size, strength, midlevel, seed, cloud size, vertical stretch, detail, contrast, pattern (soft lumps, cells, cracked plates, crackle, blocks) |
+| 2 Shape | **Edit Mode**, **Add Chunk**, **Convert to Mesh** | duplicate / move parts yourself (Shift+D, G, S, R) or add random chunks. The remesh welds them, then convert applies it (a hidden blockout copy is kept) | chunk size, box or round |
+| 3 Sculpt | **Start Sculpting**, brush buttons, **Apply Sculpt** | Multires + rock brushes (Clay Strips, Scrape, Flatten, Cracks, Crease, Pinch, Grab, Smooth) | sculpt resolution, keep level. *Skip* if you don't want to sculpt |
+| 4 Unwrap | **Unwrap (Cube Projection)** | cube projected UVs at real-world size | **Texture Size** (stays live afterwards) |
+| 5 Rock Detail | **Add Rock Detail** | Subdivision + Displace with the texture set's displacement map (UV): the rocky detail becomes real geometry | viewport / render subdivisions, strength, midlevel (taken from `info.json` `h_mean` when present), texture size |
+| 6 Material | **Add All Textures** | color x AO, roughness, metal (or packed ARM / ORM), normal map, bump. All on the same UVs | everything in the Shader Editor. *Paint More Layers* hands it to the Material Layer Mixer |
+| 7 Finish | **Bake Game LODs**, **Apply Everything**, **Make another one** | game-ready LODs, a real high-poly mesh, or the next rock | — |
+
+Pick the texture set at the top of the panel, either from the **Texture Library** or **From Disk**: choose any one
+map, e.g. `cliff_side_disp_4k.png`, and the diffuse, normal, roughness, AO and ARM files next to it are found
+automatically.
 
 ## 3. Texture it (automatic)
 

@@ -16,7 +16,7 @@ bl_info = {
 
 import bpy
 from bpy.app.handlers import persistent
-from . import props, ops, ui, library, presets
+from . import props, ops, ui, library, presets, handmade
 
 
 def _menu_add(self, context):
@@ -44,6 +44,7 @@ def _startup():
 
 def register():
     props.register()
+    handmade.register()
     for c in ops.CLASSES + ui.CLASSES:
         bpy.utils.register_class(c)
     bpy.types.VIEW3D_MT_mesh_add.append(_menu_add)
@@ -61,4 +62,5 @@ def unregister():
     for c in reversed(ops.CLASSES + ui.CLASSES):
         bpy.utils.unregister_class(c)
     library.unregister()
+    handmade.unregister()
     props.unregister()

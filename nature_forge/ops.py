@@ -117,6 +117,8 @@ def sync_base_height(ob, mat, report=None, suggest=False):
             set_input(md, 'Texture Depth', float(info['depth']))
         if 'tile' in info:
             set_input(md, 'Tile Size', float(info['tile']))
+        if 'mid' in info:
+            set_input(md, 'Mid Level', float(info['mid']))
     if report is not None and src == 'color':
         report({'INFO'}, "This set has no height map: displacing with the colour brightness")
     touch(ob)

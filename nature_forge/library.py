@@ -92,7 +92,7 @@ def _walk_json(d, depth=0):
     if isinstance(d, dict):
         for k, v in d.items():
             yield str(k).lower(), v
-            if isinstance(v, (dict, list)):
+            if isinstance(v, (dict, list)) and str(k).lower() not in ('files', 'maps', 'textures'):
                 yield from _walk_json(v, depth + 1)
     elif isinstance(d, list):
         for v in d[:50]:
@@ -123,8 +123,32 @@ def parse_info(path):
     except (OSError, ValueError):
         return {}
     out = {}
+    if isinstance(data, dict):
+        # explicit map list, e.g. {"files": {"color": "color.jpg", "height": "height.png", ...}}
+        fm = data.get('files') or data.get('maps') or data.get('textures')
+        if isinstance(fm, dict):
+            files = {}
+            for k, v in fm.items():
+                if not isinstance(v, str):
+                    continue
+                chan = next((c for c, words in WORDS if str(k).lower().replace('_', '') in words or
+                             str(k).lower() == c), None)
+                if chan and chan not in ('ignore', 'preview') and chan not in files:
+                    files[chan] = v
+            if files:
+                out['files'] = files
+        # mean height = the level that keeps the surface where it was (best displacement mid level)
+        for key in ('h_mean', 'height_mean', 'mean_height', 'midlevel', 'mid_level'):
+            f = _num(data.get(key))
+            if f is not None and 0.0 <= f <= 1.0:
+                out['mid'] = round(f, 4)
+                break
+        if isinstance(data.get('id'), str):
+            out['id'] = data['id'].strip()[:80]
     for k, v in _walk_json(data):
         kk = k.replace(' ', '_').replace('-', '_')
+        if kk in ('files', 'maps', 'textures'):
+            continue
         if kk in ('name', 'title', 'display_name', 'material_name') and isinstance(v, str) and 'name' not in out:
             out['name'] = v.strip()[:80]
         elif kk in ('category', 'categories', 'type', 'group', 'collection', 'tags') and 'category' not in out:
@@ -147,7 +171,7 @@ def parse_info(path):
             f = _num(v)
             if f is not None and 0.05 <= f <= 20.0:      # bigger numbers are usually pixels, not metres
                 out['tile'] = f
-        elif 'normal' in kk and isinstance(v, str) and 'normal_dx' not in out:
+        elif 'normal' in kk and isinstance(v, str) and 'normal_dx' not in out and not os.path.splitext(v)[1]:
             s = v.lower()
             if 'directx' in s or s in ('dx', 'd3d') or 'dx' in s.split():
                 out['normal_dx'] = True
@@ -192,6 +216,14 @@ def scan_dir(dirpath, files, root):
                 normals.setdefault(conv, p)
             elif chan not in maps:
                 maps[chan] = p
+        if info.get('files') and (key == '' or len(groups) == 1):
+            for chan, fn in info['files'].items():          # the json knows best which file is which
+                p = os.path.join(dirpath, fn)
+                if os.path.isfile(p):
+                    if chan == 'normal':
+                        normals = {'': p}
+                    else:
+                        maps[chan] = p
         dx = False
         if normals:
             if 'GL' in normals:

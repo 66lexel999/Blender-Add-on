@@ -568,18 +568,26 @@ def asset_material(ts, mark_asset=True):
         nd.image = load_image(maps[chan], chan in library.DATA)
         nd.label = chan
         return nd
+    orm = None
+    if 'orm' in maps and not all(c in maps for c in ('ao', 'rough', 'metal')):
+        orm = t.sep(t.o(tex('orm'), 'Color'))           # packed AO / roughness / metal (R / G / B)
     if 'color' in maps:
         c = tex('color')
         col = t.o(c, 'Color')
-        if 'ao' in maps:
-            col = t.mix(1.0, col, t.o(tex('ao'), 'Color'), 'RGBA', 'MULTIPLY')
+        if 'ao' in maps or orm is not None:
+            ao = t.o(tex('ao'), 'Color') if 'ao' in maps else t.xyz(orm[0], orm[0], orm[0])
+            col = t.mix(1.0, col, ao, 'RGBA', 'MULTIPLY')
         t.put(b, 'Base Color', col)
     if 'rough' in maps:
         t.put(b, 'Roughness', t.o(tex('rough'), 'Color'))
     elif 'gloss' in maps:
         t.put(b, 'Roughness', t.sub(1.0, t.o(tex('gloss'), 'Color')))
+    elif orm is not None:
+        t.put(b, 'Roughness', orm[1])
     if 'metal' in maps:
         t.put(b, 'Metallic', t.o(tex('metal'), 'Color'))
+    elif orm is not None:
+        t.put(b, 'Metallic', orm[2])
     if 'alpha' in maps:
         t.put(b, 'Alpha', t.o(tex('alpha'), 'Color'))
     if 'normal' in maps:
@@ -589,7 +597,8 @@ def asset_material(ts, mark_asset=True):
             c = t.xyz(cx, t.sub(1.0, cy), cz)
         t.put(b, 'Normal', t.o(t.node('ShaderNodeNormalMap', {'Color': c})))
     if 'height' in maps:
-        d = t.node('ShaderNodeDisplacement', {'Height': t.o(tex('height'), 'Color'), 'Midlevel': 0.5,
+        d = t.node('ShaderNodeDisplacement', {'Height': t.o(tex('height'), 'Color'),
+                                              'Midlevel': float(ts.get('info', {}).get('mid', 0.5)),
                                               'Scale': float(ts.get('info', {}).get('depth', 0.03))})
         t.put(out, 'Displacement', d)
     t.put(out, 'Surface', b)
