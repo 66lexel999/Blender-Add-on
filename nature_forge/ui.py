@@ -257,7 +257,7 @@ class NF_PT_material(_Base, Panel):
     @classmethod
     def poll(cls, context):
         ob = ctx_ob(context)
-        return ob is not None and (nf_mod(ob) is not None or bool(nf_materials(ob)))
+        return ob is not None and not handmade.in_flow(ob) and (nf_mod(ob) is not None or bool(nf_materials(ob)))
 
     def draw_header(self, context):
         self.layout.label(icon='MATERIAL')
@@ -367,7 +367,8 @@ class NF_PT_finish(_Base, Panel):
     @classmethod
     def poll(cls, context):
         ob = ctx_ob(context)
-        return ob is not None and (nf_mod(ob) is not None or bool(nf_materials(ob)) or ob.get('nf_final'))
+        return ob is not None and not handmade.in_flow(ob) and \
+            (nf_mod(ob) is not None or bool(nf_materials(ob)) or ob.get('nf_final'))
 
     def draw_header(self, context):
         self.layout.label(icon='BRUSH_DATA')
@@ -620,7 +621,8 @@ def step_material(l, context, ob):
     mat = ob.active_material
     if done and mat is not None:
         base = mat
-        if hasattr(mat, 'mlm') and mat.mlm.is_stack and len(mat.mlm.layers) and mat.mlm.layers[0].material:
+        stack = hasattr(mat, 'mlm') and mat.mlm.is_stack
+        if stack and len(mat.mlm.layers) and mat.mlm.layers[0].material:
             base = mat.mlm.layers[0].material
             l.label(text=f"{mat.name} (Mixer layers on {base.name})", icon='MATERIAL')
         else:
@@ -635,6 +637,8 @@ def step_material(l, context, ob):
             col.prop(nd.inputs[1], 'default_value', text="Roughness +/-")
         _node_prop(col, base, 'NF:normal', 'Strength', "Normal Strength")
         _node_prop(col, base, 'NF:disp', 'Scale', "Bump Scale")
+        if stack:
+            l.operator('nf.hand_mlm_refresh', icon='FILE_REFRESH')
         op = l.operator('nf.hand_material', text="Rebuild Material", icon='FILE_REFRESH', emboss=False)
         op.rebuild = True
         l.label(text="Viewport: Z > Material Preview", icon='INFO')

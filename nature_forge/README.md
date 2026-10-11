@@ -87,7 +87,7 @@ any time:
 |---|---|---|---|
 | Start | **Rock / Cliff / Slab / Pillar** or **Use 'your mesh'** | a block at the 3D cursor (or your own model) | — |
 | 1 Blockout | **Add Remesh + Clouds** | voxel Remesh + Displace with a Clouds texture: one lumpy, solid rock mass | voxel size, strength, midlevel, seed, cloud size, vertical stretch, detail, contrast, pattern (soft lumps, cells, cracked plates, crackle, blocks) |
-| 2 Shape | **Edit Mode**, **Add Chunk**, **Convert to Mesh** | duplicate / move parts yourself (Shift+D, G, S, R) or add random chunks. The remesh welds them, then convert applies it (a hidden blockout copy is kept) | chunk size, box or round |
+| 2 Shape | **Edit Mode**, **Add Chunk**, **Convert to Mesh** | duplicate / move parts yourself (Shift+D, G, S, R) or add random chunks. The remesh welds them, then convert applies it. A hidden live copy is kept, and **Back to Blockout** brings it back with the same seed and sliders | chunk size, box or round |
 | 3 Sculpt | **Start Sculpting**, brush buttons, **Apply Sculpt** | Multires + rock brushes (Clay Strips, Scrape, Flatten, Cracks, Crease, Pinch, Grab, Smooth) | sculpt resolution, keep level. *Skip* if you don't want to sculpt |
 | 4 Unwrap | **Unwrap (Cube Projection)** | cube projected UVs at real-world size | **Texture Size** (stays live afterwards) |
 | 5 Rock Detail | **Add Rock Detail** | Subdivision + Displace with the texture set's displacement map (UV): the rocky detail becomes real geometry | viewport / render subdivisions, strength, midlevel (taken from `info.json` `h_mean` when present), texture size |
@@ -97,6 +97,15 @@ any time:
 Pick the texture set at the top of the panel, either from the **Texture Library** or **From Disk**: choose any one
 map, e.g. `cliff_side_disp_4k.png`, and the diffuse, normal, roughness, AO and ARM files next to it are found
 automatically.
+
+Good to know:
+* **Next** always works. If a step needs an earlier one finished (Unwrap needs the blockout converted and the
+  sculpt applied), it does that for you and tells you.
+* **Shift+D** a rock at any step to make a variation. The copy gets its own clouds, textures and material, so
+  changing one never changes the other.
+* Every rock has its own material (`<rock>_<set>`). Your node edits are kept until you press **Rebuild Material**
+  or pick a different set. With **Paint More Layers** (Material Layer Mixer), picking a set swaps only the base
+  layer; your Mixer layers stay.
 
 ## 3. Texture it (automatic)
 

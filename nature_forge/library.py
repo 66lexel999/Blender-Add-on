@@ -86,18 +86,23 @@ def display_name(fname):
 
 
 # ---------------------------------------------------------------------------------------------- info.json
-def _walk_json(d, depth=0):
+MAP_KEYS = ('files', 'maps', 'textures')
+
+
+def _walk_json(d, depth=0, in_maps=False):
+    """-> (key, value, inside a files / maps / textures block)"""
     if depth > 3:
         return
     if isinstance(d, dict):
         for k, v in d.items():
-            yield str(k).lower(), v
+            kl = str(k).lower()
+            yield kl, v, in_maps
             if isinstance(v, (dict, list)):
-                yield from _walk_json(v, depth + 1)
+                yield from _walk_json(v, depth + 1, in_maps or kl in MAP_KEYS)
     elif isinstance(d, list):
         for v in d[:50]:
             if isinstance(v, (dict, list)):
-                yield from _walk_json(v, depth + 1)
+                yield from _walk_json(v, depth + 1, in_maps)
 
 
 def _num(v):
@@ -153,10 +158,13 @@ def parse_info(path):
                 break
         if isinstance(data.get('id'), str):
             out['id'] = data['id'].strip()[:80]
-    for k, v in _walk_json(data):
+    for k, v, in_maps in _walk_json(data):
         kk = k.replace(' ', '_').replace('-', '_')
-        if kk in ('files', 'maps', 'textures') or (isinstance(v, str) and v.lower().endswith(EXTS)):
+        if kk in MAP_KEYS or (isinstance(v, str) and v.lower().endswith(EXTS)):
             continue
+        if in_maps and not ('normal' in kk or any(w in kk for w in ('displacement', 'disp', 'height_scale',
+                                                                     'heightscale', 'depth'))):
+            continue                                  # per-map 'type' / 'scale' / 'path' are not set properties
         if kk in ('name', 'title', 'display_name', 'material_name') and isinstance(v, str) and 'name' not in out:
             out['name'] = v.strip()[:80]
         elif kk in ('category', 'categories', 'type', 'group', 'collection', 'tags') and 'category' not in out:
@@ -204,11 +212,19 @@ def scan_dir(dirpath, files, root):
             break
     # files the json names belong to the folder's set with the json's channel, whatever their names are
     listed = {fn.lower(): ch for ch, fn in info.get('files', {}).items()}
+    present = [f for f in imgs if f.lower() in listed]
+    # the set the json describes keeps the key (and so the id) of its own files - the most common one
+    owner_key = None
+    if present:
+        keys = [classify(f)[0] for f in present]
+        owner_key = max(set(keys), key=keys.count)
     groups = {}
     for f in imgs:
         key, chan, conv, explicit = classify(f)
         if f.lower() in listed:
-            key, chan, explicit = '', listed[f.lower()], True
+            key, chan, explicit = owner_key, listed[f.lower()], True
+        elif owner_key is not None and key == '':
+            key = owner_key                           # generic names (preview.jpg, color.jpg) join the json set
         if chan == 'ignore':
             continue
         g = groups.setdefault(key, {'files': [], 'explicit_color': False})
@@ -262,17 +278,15 @@ def scan_dir(dirpath, files, root):
         out.append({'key': key, 'is_dir': is_dir_set, 'name': name, 'cat': cat, 'maps': maps, 'dx': dx,
                     'preview': preview})
     # the json describes one set: the one holding its listed files, or the only set in the folder
-    owner = None
-    if listed:
-        owner = next((o for o in out if o['key'] == ''), None)
-    elif len(out) == 1:
-        owner = out[0]
+    owner = next((o for o in out if o['key'] == owner_key), None) if owner_key is not None else None
+    if owner is None and len(out) == 1:
+        owner = out[0]                                # (also when the json lists names that don't exist)
     sets = []
     for o in out:
         inf = info if o is owner else {}
         dx = inf['normal_dx'] if 'normal_dx' in inf else o['dx']
-        name = (inf.get('name') or inf.get('id')) if o['is_dir'] and (inf.get('name') or inf.get('id')) else o['name']
-        prev = o['preview'] or (spare_previews[0] if spare_previews and o is (owner or out[0]) else None)
+        name = inf.get('name') or (inf.get('id') if o['is_dir'] else None) or o['name']
+        prev = o['preview'] or (spare_previews[0] if spare_previews and (o is owner or len(out) == 1) else None)
         maps = o['maps']
         sets.append({'id': _sid(dirpath, o['key']), 'name': name, 'category': inf.get('category') or o['cat'] or
                      'Library', 'dir': dirpath, 'maps': maps, 'normal_dx': dx,
@@ -384,8 +398,9 @@ def set_from_files(directory, filenames):
     found = scan_dir(directory, files, os.path.dirname(directory.rstrip('/\\')))
     if not filenames or len(found) <= 1:
         return found
-    keys = {classify(f)[0] for f in filenames if f}
-    picked = [s for s in found if s['id'] in {_sid(directory, k) for k in keys}]
+    want = {f.lower() for f in filenames if f}
+    picked = [s for s in found if want & {os.path.basename(p).lower() for p in
+                                          list(s['maps'].values()) + [s.get('preview') or '']}]
     return picked or found
 
 

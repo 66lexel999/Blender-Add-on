@@ -443,7 +443,11 @@ class NF_OT_apply_set(Operator):
             self.report({'ERROR'}, "Pick a texture set in the Texture Library first")
             return {'CANCELLED'}
         if ob.nf_hand.active:                           # a Step by Step rock: hand the set to the guide
-            return bpy.ops.nf.hand_set_library(set_id=ts['id'])
+            if self.layer > 0:
+                self.report({'ERROR'}, "Step by Step rocks use one texture set: the box at the top of Step by Step")
+                return {'CANCELLED'}
+            from . import handmade
+            return {'FINISHED'} if handmade.use_set(context, ob, ts, self.report) else {'CANCELLED'}
         mat = _mat_by_name(self.material) or (nf_materials(ob)[0][1] if nf_materials(ob) else None)
         if mat is None:
             if nf_mod(ob) is None and 'nf_rest' not in ob.data.attributes:
@@ -485,6 +489,9 @@ class NF_OT_apply_set_file(Operator):
             self.report({'ERROR'}, "No texture set found there (need at least a colour, normal or height map)")
             return {'CANCELLED'}
         ts = found[0]
+        if ob is not None and ob.nf_hand.active:
+            from . import handmade
+            return {'FINISHED'} if handmade.use_set(context, ob, ts, self.report) else {'CANCELLED'}
         mat = _mat_by_name(self.material) or (nf_materials(ob)[0][1] if ob and nf_materials(ob) else None)
         if mat is None:
             return {'CANCELLED'}
