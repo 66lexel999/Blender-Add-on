@@ -1,0 +1,25 @@
+{
+ "id": "V5_StoneWall_01",
+ "files": {
+  "color": "color.jpg",
+  "height": "height.png",
+  "normal": "normal.jpg",
+  "rough": "rough.jpg",
+  "ao": "ao.jpg"
+ },
+ "height_src": "height",
+ "h_mean": 0.41163039207458496,
+ "h_std": 0.23548662662506104,
+ "h_range": 0.9490196108818054,
+ "normal_src": "gl",
+ "gl_score": 0.812,
+ "red_score": 0.798,
+ "rough_mean": 0.6938912868499756,
+ "ao_mean": 0.7239416241645813,
+ "col_mean": [
+  0.28993093967437744,
+  0.28311726450920105,
+  0.24146036803722382
+ ],
+ "sec": 0.66
+}
