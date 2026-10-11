@@ -75,6 +75,10 @@ defaults.
 
 ## 2b. Step by Step (the hand-made / tutorial workflow)
 
+![Step by Step stages](../docs/step_by_step_preview.png)
+*(Blockout, converted with chunks, rock detail from the displacement map, final material. Made with the
+`cliff_side` texture set.)*
+
 When you'd rather build it by hand, **Forge > Step by Step** walks you through the classic workflow from the
 tutorials. Each step is one button, everything stays a normal Blender modifier, and you can go **Back / Next** at
 any time:
