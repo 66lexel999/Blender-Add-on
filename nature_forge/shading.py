@@ -10,6 +10,7 @@
 # The material is generated from a small layer list stored on it (mat['nf_layers']); slider values live in the
 # node inputs and survive rebuilds (adding / removing layers, swapping texture sets).
 import json
+import os
 import uuid
 import bpy
 from . import nodekit as nk
@@ -229,9 +230,7 @@ def ts_group(ts, kind='TRI'):
             alpha = blended('color', 'Alpha')
     else:
         col = fill_c
-    orm = None
-    if 'orm' in maps and not all(c in maps for c in ('ao', 'rough', 'metal')):
-        orm = t.sep(blended('orm'))
+    orm = t.sep(blended('orm')) if use_orm(maps) else None
     if 'ao' in maps or orm is not None:
         ao = lum(blended('ao')) if 'ao' in maps else orm[0]
         col = t.vscale(col, t.mix(aos, 1.0, ao))
@@ -545,14 +544,32 @@ def is_nf(mat):
 
 
 # ---------------------------------------------------------------------------------------------- asset materials
-def asset_material(ts, mark_asset=True):
-    """a plain UV / Principled material for a texture set (for the Asset Browser and the Material Layer Mixer):
-    every map connected, height on the Displacement output, mlm_relief_depth for the Mixer's 3D Surface"""
+def use_orm(maps):
+    """the packed AO / roughness / metal map only when AO or roughness is missing (loading a 4K ARM just for its
+    near-black metal channel adds speckles, not detail)"""
+    return 'orm' in maps and ('ao' not in maps or ('rough' not in maps and 'gloss' not in maps))
+
+
+def missing_files(ts):
+    return [p for p in ts['maps'].values() if not os.path.isfile(bpy.path.abspath(p))]
+
+
+def asset_material(ts, mark_asset=True, mat=None, hand=False):
+    """a plain UV / Principled material for a texture set: every map connected, height on the Displacement output,
+    mlm_relief_depth for the Mixer's 3D Surface. Library / asset use shares one material per set; hand=True builds
+    an object's own material (mat = rebuild that one). Key nodes are named NF:* so the UI can show their sliders."""
+    miss = missing_files(ts)
+    if miss:
+        raise FileNotFoundError(f"Texture files missing: {miss[0]}")
     name = ts['name']
-    mat = next((m for m in bpy.data.materials if m.get('nf_asset') == ts['id']), None)
+    if mat is None and not hand:
+        mat = next((m for m in bpy.data.materials if m.get('nf_asset') == ts['id'] and not m.get('nf_hand_mat')),
+                   None)
     if mat is None:
         mat = bpy.data.materials.new(name)
-        mat['nf_asset'] = ts['id']
+    mat['nf_asset'] = ts['id']
+    if hand:
+        mat['nf_hand_mat'] = True
     if hasattr(mat, 'use_nodes'):
         mat.use_nodes = True
     nt = mat.node_tree
@@ -560,6 +577,7 @@ def asset_material(ts, mark_asset=True):
     t = _Mat(mat)
     out = t.node('ShaderNodeOutputMaterial')
     b = t.node('ShaderNodeBsdfPrincipled')
+    b.name = 'NF:bsdf'
     maps = ts['maps']
     uv = t.o(t.node('ShaderNodeTexCoord'), 'UV')
 
@@ -568,22 +586,34 @@ def asset_material(ts, mark_asset=True):
         nd.image = load_image(maps[chan], chan in library.DATA)
         nd.label = chan
         return nd
-    orm = None
-    if 'orm' in maps and not all(c in maps for c in ('ao', 'rough', 'metal')):
-        orm = t.sep(t.o(tex('orm'), 'Color'))           # packed AO / roughness / metal (R / G / B)
+    orm = t.sep(t.o(tex('orm'), 'Color')) if use_orm(maps) else None   # packed AO / rough / metal (R / G / B)
     if 'color' in maps:
-        c = tex('color')
-        col = t.o(c, 'Color')
+        col = t.o(tex('color'), 'Color')
+        hsv = t.node('ShaderNodeHueSaturation', {'Color': col})
+        hsv.name = 'NF:hsv'
+        col = t.o(hsv)
         if 'ao' in maps or orm is not None:
             ao = t.o(tex('ao'), 'Color') if 'ao' in maps else t.xyz(orm[0], orm[0], orm[0])
-            col = t.mix(1.0, col, ao, 'RGBA', 'MULTIPLY')
+            mx = t.node('ShaderNodeMix', data_type='RGBA', blend_type='MULTIPLY', clamp_factor=True)
+            t.put(mx, 'Factor', 1.0)
+            t.put(mx, 'A', col)
+            t.put(mx, 'B', ao)
+            mx.name = 'NF:ao'
+            col = t.o(mx, 'Result')
         t.put(b, 'Base Color', col)
+    rough = None
     if 'rough' in maps:
-        t.put(b, 'Roughness', t.o(tex('rough'), 'Color'))
+        rough = t.o(tex('rough'), 'Color')
     elif 'gloss' in maps:
-        t.put(b, 'Roughness', t.sub(1.0, t.o(tex('gloss'), 'Color')))
+        rough = t.sub(1.0, t.o(tex('gloss'), 'Color'))
     elif orm is not None:
-        t.put(b, 'Roughness', orm[1])
+        rough = orm[1]
+    if rough is not None:
+        ra = t.node('ShaderNodeMath', operation='ADD', use_clamp=True)
+        t.put(ra, 0, rough)
+        t.put(ra, 1, 0.0)
+        ra.name = 'NF:rough'
+        t.put(b, 'Roughness', t.o(ra))
     if 'metal' in maps:
         t.put(b, 'Metallic', t.o(tex('metal'), 'Color'))
     elif orm is not None:
@@ -595,16 +625,19 @@ def asset_material(ts, mark_asset=True):
         if ts.get('normal_dx'):
             cx, cy, cz = t.sep(c)
             c = t.xyz(cx, t.sub(1.0, cy), cz)
-        t.put(b, 'Normal', t.o(t.node('ShaderNodeNormalMap', {'Color': c})))
+        nm = t.node('ShaderNodeNormalMap', {'Color': c})
+        nm.name = 'NF:normal'
+        t.put(b, 'Normal', t.o(nm))
     if 'height' in maps:
         d = t.node('ShaderNodeDisplacement', {'Height': t.o(tex('height'), 'Color'),
                                               'Midlevel': float(ts.get('info', {}).get('mid', 0.5)),
                                               'Scale': float(ts.get('info', {}).get('depth', 0.03))})
+        d.name = 'NF:disp'
         t.put(out, 'Displacement', d)
     t.put(out, 'Surface', b)
     t.layout()
     mat['mlm_relief_depth'] = float(ts.get('info', {}).get('depth', 0.03))
-    if mark_asset and mat.asset_data is None:
+    if mark_asset and not hand and mat.asset_data is None:
         mat.asset_mark()
         if not bpy.app.background:                  # preview rendering needs a GPU context
             try:

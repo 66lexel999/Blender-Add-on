@@ -92,7 +92,7 @@ def _walk_json(d, depth=0):
     if isinstance(d, dict):
         for k, v in d.items():
             yield str(k).lower(), v
-            if isinstance(v, (dict, list)) and str(k).lower() not in ('files', 'maps', 'textures'):
+            if isinstance(v, (dict, list)):
                 yield from _walk_json(v, depth + 1)
     elif isinstance(d, list):
         for v in d[:50]:
@@ -127,14 +127,22 @@ def parse_info(path):
         # explicit map list, e.g. {"files": {"color": "color.jpg", "height": "height.png", ...}}
         fm = data.get('files') or data.get('maps') or data.get('textures')
         if isinstance(fm, dict):
-            files = {}
+            files, normals = {}, {}
             for k, v in fm.items():
-                if not isinstance(v, str):
-                    continue
-                chan = next((c for c, words in WORDS if str(k).lower().replace('_', '') in words or
-                             str(k).lower() == c), None)
-                if chan and chan not in ('ignore', 'preview') and chan not in files:
+                if not isinstance(v, str) or not v.lower().endswith(EXTS):
+                    continue                              # 'normal_format': 'DirectX' etc. are settings, not files
+                kk = str(k).lower().replace('_', '').replace('-', '')
+                chan = next((c for c, words in WORDS if kk in words or kk == c), None)
+                if chan == 'normal':
+                    conv = 'DX' if kk in DX_HINT else 'GL' if kk in GL_HINT else classify(v)[2]
+                    normals.setdefault(conv, v)
+                elif chan and chan not in ('ignore', 'preview') and chan not in files:
                     files[chan] = v
+            if normals:                                   # OpenGL > unlabeled > DirectX, like file names
+                conv = 'GL' if 'GL' in normals else '' if '' in normals else 'DX'
+                files['normal'] = normals[conv]
+                if conv == 'DX':
+                    out['normal_dx'] = True
             if files:
                 out['files'] = files
         # mean height = the level that keeps the surface where it was (best displacement mid level)
@@ -147,7 +155,7 @@ def parse_info(path):
             out['id'] = data['id'].strip()[:80]
     for k, v in _walk_json(data):
         kk = k.replace(' ', '_').replace('-', '_')
-        if kk in ('files', 'maps', 'textures'):
+        if kk in ('files', 'maps', 'textures') or (isinstance(v, str) and v.lower().endswith(EXTS)):
             continue
         if kk in ('name', 'title', 'display_name', 'material_name') and isinstance(v, str) and 'name' not in out:
             out['name'] = v.strip()[:80]
@@ -171,9 +179,9 @@ def parse_info(path):
             f = _num(v)
             if f is not None and 0.05 <= f <= 20.0:      # bigger numbers are usually pixels, not metres
                 out['tile'] = f
-        elif 'normal' in kk and isinstance(v, str) and 'normal_dx' not in out and not os.path.splitext(v)[1]:
+        elif 'normal' in kk and isinstance(v, str) and 'normal_dx' not in out:
             s = v.lower()
-            if 'directx' in s or s in ('dx', 'd3d') or 'dx' in s.split():
+            if 'directx' in s or s in ('dx', 'd3d') or 'dx' in re.split(r'[^a-z0-9]+', s):
                 out['normal_dx'] = True
             elif 'opengl' in s or s in ('gl', 'ogl'):
                 out['normal_dx'] = False
@@ -189,23 +197,27 @@ def scan_dir(dirpath, files, root):
     imgs = sorted(f for f in files if f.lower().endswith(EXTS))
     if not imgs:
         return []
+    info = {}
+    for jf in ('info.json', 'material.json', 'meta.json', 'metadata.json'):
+        if jf in files:
+            info = parse_info(os.path.join(dirpath, jf))
+            break
+    # files the json names belong to the folder's set with the json's channel, whatever their names are
+    listed = {fn.lower(): ch for ch, fn in info.get('files', {}).items()}
     groups = {}
     for f in imgs:
         key, chan, conv, explicit = classify(f)
+        if f.lower() in listed:
+            key, chan, explicit = '', listed[f.lower()], True
         if chan == 'ignore':
             continue
         g = groups.setdefault(key, {'files': [], 'explicit_color': False})
         g['files'].append((f, chan, conv))
         if chan == 'color' and explicit:
             g['explicit_color'] = True
-    info = {}
-    for jf in ('info.json', 'material.json', 'meta.json', 'metadata.json'):
-        if jf in files:
-            info = parse_info(os.path.join(dirpath, jf))
-            break
     folder = os.path.basename(dirpath.rstrip('/\\'))
     rel = os.path.relpath(dirpath, root) if root else ''
-    out = []
+    out, spare_previews = [], []
     for key, g in groups.items():
         maps, normals, preview = {}, {}, None
         for f, chan, conv in g['files']:
@@ -213,26 +225,27 @@ def scan_dir(dirpath, files, root):
             if chan == 'preview':
                 preview = preview or p
             elif chan == 'normal':
-                normals.setdefault(conv, p)
-            elif chan not in maps:
+                if f.lower() in listed:
+                    normals = {conv: p, **{k: v for k, v in normals.items() if k != conv}}
+                    normals['__json__'] = p
+                else:
+                    normals.setdefault(conv, p)
+            elif chan not in maps or (f.lower() in listed):
                 maps[chan] = p
-        if info.get('files') and (key == '' or len(groups) == 1):
-            for chan, fn in info['files'].items():          # the json knows best which file is which
-                p = os.path.join(dirpath, fn)
-                if os.path.isfile(p):
-                    if chan == 'normal':
-                        normals = {'': p}
-                    else:
-                        maps[chan] = p
         dx = False
         if normals:
-            if 'GL' in normals:
+            if '__json__' in normals:
+                maps['normal'] = normals['__json__']
+                dx = classify(os.path.basename(maps['normal']))[2] == 'DX'
+            elif 'GL' in normals:
                 maps['normal'] = normals['GL']
             elif '' in normals:
                 maps['normal'] = normals['']
             else:
                 maps['normal'], dx = normals['DX'], True
         if not any(c in maps for c in ('color', 'normal', 'height')):
+            if preview:
+                spare_previews.append(preview)
             continue
         if len(maps) < 2 and not g['explicit_color']:
             continue                               # a lone picture (Material Index.jpg, a reference photo ...)
@@ -246,13 +259,25 @@ def scan_dir(dirpath, files, root):
             cat = rel if rel not in ('', '.') else ''
         cat = cat.replace('\\', '/').strip('/')
         cat = '/'.join(cat.split('/')[-2:]) if cat else os.path.basename(root.rstrip('/\\')) if root else ''
-        if 'normal_dx' in info:
-            dx = info['normal_dx']
-        s = {'id': _sid(dirpath, key), 'name': (info.get('name') if is_dir_set and info.get('name') else name),
-             'category': info.get('category') or cat or 'Library', 'dir': dirpath, 'maps': maps, 'normal_dx': dx,
-             'preview': preview or maps.get('color') or maps.get('normal') or maps.get('height'), 'info': info}
-        out.append(s)
-    return out
+        out.append({'key': key, 'is_dir': is_dir_set, 'name': name, 'cat': cat, 'maps': maps, 'dx': dx,
+                    'preview': preview})
+    # the json describes one set: the one holding its listed files, or the only set in the folder
+    owner = None
+    if listed:
+        owner = next((o for o in out if o['key'] == ''), None)
+    elif len(out) == 1:
+        owner = out[0]
+    sets = []
+    for o in out:
+        inf = info if o is owner else {}
+        dx = inf['normal_dx'] if 'normal_dx' in inf else o['dx']
+        name = (inf.get('name') or inf.get('id')) if o['is_dir'] and (inf.get('name') or inf.get('id')) else o['name']
+        prev = o['preview'] or (spare_previews[0] if spare_previews and o is (owner or out[0]) else None)
+        maps = o['maps']
+        sets.append({'id': _sid(dirpath, o['key']), 'name': name, 'category': inf.get('category') or o['cat'] or
+                     'Library', 'dir': dirpath, 'maps': maps, 'normal_dx': dx,
+                     'preview': prev or maps.get('color') or maps.get('normal') or maps.get('height'), 'info': inf})
+    return sets
 
 
 def scan(roots, max_sets=20000):

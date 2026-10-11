@@ -223,11 +223,12 @@ class NF_OT_rockify(Operator):
 
     @classmethod
     def poll(cls, context):
-        return any(o.type == 'MESH' and nf_mod(o) is None for o in context.selected_objects)
+        return any(o.type == 'MESH' and nf_mod(o) is None and not o.nf_hand.active for o in context.selected_objects)
 
     def execute(self, context):
         n = 0
-        for ob in [o for o in context.selected_objects if o.type == 'MESH' and nf_mod(o) is None]:
+        for ob in [o for o in context.selected_objects if o.type == 'MESH' and nf_mod(o) is None
+                   and not o.nf_hand.active]:
             rockify(context, ob)
             n += 1
         self.report({'INFO'}, f"Rockified {n} object(s) - pick a texture set in Texture Library")
@@ -441,6 +442,8 @@ class NF_OT_apply_set(Operator):
         if ts is None:
             self.report({'ERROR'}, "Pick a texture set in the Texture Library first")
             return {'CANCELLED'}
+        if ob.nf_hand.active:                           # a Step by Step rock: hand the set to the guide
+            return bpy.ops.nf.hand_set_library(set_id=ts['id'])
         mat = _mat_by_name(self.material) or (nf_materials(ob)[0][1] if nf_materials(ob) else None)
         if mat is None:
             if nf_mod(ob) is None and 'nf_rest' not in ob.data.attributes:
@@ -507,11 +510,15 @@ class NF_OT_asset_materials(Operator):
 
     def execute(self, context):
         from .props import filtered_sets
-        n = 0
+        n, skipped = 0, 0
         for ts in filtered_sets(context.window_manager.nf_lib):
-            shading.asset_material(ts)
-            n += 1
-        self.report({'INFO'}, f"{n} asset materials in this file (save it; add it as an asset library to reuse)")
+            try:
+                shading.asset_material(ts)
+                n += 1
+            except (FileNotFoundError, RuntimeError):
+                skipped += 1
+        self.report({'INFO'}, f"{n} asset materials in this file (save it; add it as an asset library to reuse)" +
+                    (f" - {skipped} skipped (files missing, rescan the library)" if skipped else ""))
         return {'FINISHED'}
 
 

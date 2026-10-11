@@ -89,7 +89,8 @@ class NF_PT_main(_Base, Panel):
             op = row.operator('nf.hand_start', text=handmade.BASES[k][0], icon='SCULPTMODE_HLT')
             op.kind = k
         ob = ctx_ob(context)
-        if ob is not None and nf_mod(ob) is None and not ob.get('nf_final') and not nf_materials(ob):
+        if ob is not None and nf_mod(ob) is None and not ob.get('nf_final') and not nf_materials(ob) and \
+                not ob.nf_hand.active:
             l.label(text="Rockify: your own model + texture height", icon='INFO')
 
 
@@ -336,8 +337,13 @@ class NF_PT_library(_Base, Panel):
             if bits:
                 col.label(text="info.json: " + ", ".join(bits), icon='FILE_TEXT')
         ob = ctx_ob(context)
-        mats = nf_materials(ob) if ob is not None else []
-        if mats and ts is not None:
+        mats = nf_materials(ob) if ob is not None and not handmade.in_flow(ob) else []
+        if ts is not None and handmade.in_flow(ob):
+            row = l.row()
+            row.scale_y = 1.3
+            op = row.operator('nf.hand_set_library', text="Use for Step by Step", icon='IMPORT')
+            op.set_id = ts['id']
+        elif mats and ts is not None:
             box = l.box()
             box.label(text="Apply to:", icon='IMPORT')
             for role, mat in mats:
@@ -449,12 +455,19 @@ def step_blockout(l, context, ob):
     H = ob.nf_hand
     rm, dp = ob.modifiers.get(handmade.M_REMESH), ob.modifiers.get(handmade.M_CLOUDS)
     if rm is None or dp is None:
+        if handmade.is_done(ob, 'SHAPE'):
+            l.label(text="Converted to a mesh", icon='CHECKMARK')
+            if handmade.backup_of(ob) is not None:
+                _big(l, 'nf.hand_back_blockout', "Back to Blockout (live copy)", 'LOOP_BACK', 1.3)
+            l.operator('nf.hand_blockout', text="Remesh + Clouds Again (rebuilds the shape)", icon='MOD_REMESH')
+            return
         _hint(l, "Voxel Remesh fuses the block into one solid,", "a Clouds displacement makes it lumpy.")
         _big(l, 'nf.hand_blockout', "Step 1: Add Remesh + Clouds", 'MOD_REMESH')
         return
     col = l.column(align=True)
     col.label(text="Remesh", icon='MOD_REMESH')
     col.prop(rm, 'voxel_size', text="Voxel Size")
+    col.prop(rm, 'adaptivity', text="Adaptivity")
     col.prop(rm, 'use_smooth_shade', text="Smooth Shading")
     col = l.column(align=True)
     col.label(text="Clouds Displacement", icon='MOD_DISPLACE')
@@ -476,7 +489,17 @@ def step_blockout(l, context, ob):
 
 def step_shape(l, context, ob):
     H = ob.nf_hand
-    live = ob.modifiers.get(handmade.M_REMESH) is not None
+    live = handmade.live_blockout(ob)
+    if not live:
+        if handmade.is_done(ob, 'SHAPE'):
+            l.label(text="Converted to a mesh", icon='CHECKMARK')
+            if handmade.backup_of(ob) is not None:
+                l.operator('nf.hand_back_blockout', icon='LOOP_BACK')
+            l.operator('nf.hand_edit', text="Object Mode" if ob.mode == 'EDIT' else "Edit Mode (no remesh now)",
+                       icon='EDITMODE_HLT')
+        else:
+            l.label(text="Do step 1 first (Remesh + Clouds)", icon='INFO')
+        return
     _hint(l, "Optional: Edit Mode, select faces, Shift+D", "duplicates a chunk, G / S / R moves it.",
           "The remesh welds every piece into the rock.")
     row = l.row(align=True)
@@ -485,23 +508,22 @@ def step_shape(l, context, ob):
     row.operator('nf.hand_chunk', icon='ADD')
     row.prop(H, 'chunk_shape', expand=True)
     l.prop(H, 'chunk_size', slider=True)
-    if live:
-        _big(l, 'nf.hand_convert', "Convert to Mesh", 'MESH_DATA')
-    elif handmade.is_done(ob, 'SHAPE'):
-        l.label(text="Converted to a mesh", icon='CHECKMARK')
-    else:
-        l.label(text="No remesh / clouds (step 1) to convert", icon='INFO')
+    _hint(l, "Then convert (needed before sculpting / UVs):")
+    _big(l, 'nf.hand_convert', "Convert to Mesh", 'MESH_DATA')
 
 
 def step_sculpt(l, context, ob):
     H = ob.nf_hand
-    mr = next((m for m in ob.modifiers if m.type == 'MULTIRES'), None)
+    mr = handmade.multires_of(ob)
     if mr is None:
+        if handmade.is_done(ob, 'SCULPT'):
+            l.label(text="Sculpt applied", icon='CHECKMARK')
         _hint(l, "Optional: carve planes, cracks and ledges.", "Multires gives you detail to sculpt on.")
         l.prop(H, 'sculpt_levels')
-        _big(l, 'nf.hand_sculpt', "Start Sculpting", 'SCULPTMODE_HLT')
-        op = l.operator('nf.hand_goto', text="Skip Sculpting", icon='FORWARD')
-        op.step = handmade.STEP_KEYS.index('UV')
+        _big(l, 'nf.hand_sculpt', "Start Sculpting" if not handmade.is_done(ob, 'SCULPT') else "Sculpt More",
+             'SCULPTMODE_HLT')
+        if handmade.live_blockout(ob):
+            l.label(text="(converts the blockout first)", icon='INFO')
         return
     if context.mode != 'SCULPT':
         _big(l, 'nf.hand_sculpt', "Back to Sculpt Mode", 'SCULPTMODE_HLT', 1.2)
@@ -523,10 +545,12 @@ def step_sculpt(l, context, ob):
             col.prop(br, 'strength', text="Strength")
         _hint(l, "Ctrl = invert the brush, Shift = smooth,", "F = size, Shift+F = strength")
     col = l.column(align=True)
-    col.prop(mr, 'sculpt_levels', text="Sculpt Level")
+    row = col.row(align=True)
+    row.prop(mr, 'sculpt_levels', text="Sculpt Level")
+    row.operator('nf.hand_subdivide', text="", icon='ADD')
     col.prop(H, 'keep_level')
     _faces(l, context, ob)
-    _big(l, 'nf.hand_sculpt_apply', "Apply Sculpt", 'CHECKMARK')
+    _big(l, 'nf.hand_sculpt_apply', "Apply Sculpt & Next", 'CHECKMARK')
 
 
 def step_uv(l, context, ob):
@@ -536,15 +560,28 @@ def step_uv(l, context, ob):
     _big(l, 'nf.hand_unwrap', "Unwrap Again" if handmade.is_done(ob, 'UV') else "Unwrap (Cube Projection)", 'UV')
     if handmade.is_done(ob, 'UV'):
         l.label(text="Texture Size now updates live", icon='CHECKMARK')
+    elif handmade.live_blockout(ob) or handmade.multires_of(ob) is not None:
+        l.label(text="(converts / applies the earlier steps first)", icon='INFO')
+
+
+def _set_buttons(l):
+    row = l.row(align=True)
+    row.operator('nf.hand_set_library', text="Use Library Pick", icon='ASSET_MANAGER')
+    row.operator('nf.hand_set_file', text="From Disk", icon='FILEBROWSER')
 
 
 def step_detail(l, context, ob):
     ts = handmade.texture_set(ob)
     sub, dp = ob.modifiers.get(handmade.M_SUBDIV), ob.modifiers.get(handmade.M_DETAIL)
     if ts is None:
-        l.label(text="Choose a texture set (box above)", icon='ERROR')
-    else:
-        _hint(l, "Subdivision + Displace with the texture's", "displacement map: real rocky geometry.")
+        l.label(text="Choose the texture set:", icon='TEXTURE')
+        _set_buttons(l)
+        row = l.row()
+        row.enabled = False
+        row.scale_y = 1.4
+        row.operator('nf.hand_detail', icon='MOD_DISPLACE')
+        return
+    _hint(l, "Subdivision + Displace with the texture's", "displacement map: real rocky geometry.")
     _big(l, 'nf.hand_detail', "Update Rock Detail" if dp is not None else "Add Rock Detail", 'MOD_DISPLACE')
     if sub is not None and dp is not None:
         col = l.column(align=True)
@@ -554,16 +591,54 @@ def step_detail(l, context, ob):
         col.prop(dp, 'strength', text="Strength")
         col.prop(dp, 'mid_level', text="Midlevel")
         col.prop(ob.nf_hand, 'uv_size')
+        col.prop(ob.nf_hand, 'strength_follows')
+        h, b = l.panel(f"nf_hand_detail_more_{ob.name}", default_closed=True)
+        h.label(text="More")
+        if b is not None:
+            c = b.column(align=True)
+            c.prop(dp, 'texture_coords', text="Coordinates")
+            c.prop(dp, 'direction', text="Direction")
+            c.prop(sub, 'quality', text="Subdivision Quality")
         _faces(l, context, ob)
 
 
+def _node_prop(layout, mat, node, inp, text):
+    nd = mat.node_tree.nodes.get(node) if mat is not None and mat.node_tree else None
+    if nd is not None and inp in nd.inputs:
+        layout.prop(nd.inputs[inp], 'default_value', text=text)
+
+
 def step_material(l, context, ob):
+    ts = handmade.texture_set(ob)
+    if ts is None:
+        l.label(text="Choose the texture set:", icon='TEXTURE')
+        _set_buttons(l)
+        return
     _hint(l, "Colour x AO, roughness, metal, normal map", "and bump, all on the same UVs.")
-    _big(l, 'nf.hand_material', "Add All Textures", 'MATERIAL')
-    if handmade.is_done(ob, 'MATERIAL') and ob.active_material is not None:
-        l.label(text=ob.active_material.name, icon='MATERIAL')
+    done = handmade.is_done(ob, 'MATERIAL')
+    _big(l, 'nf.hand_material', "Add All Textures" if not done else "Use These Textures", 'MATERIAL')
+    mat = ob.active_material
+    if done and mat is not None:
+        base = mat
+        if hasattr(mat, 'mlm') and mat.mlm.is_stack and len(mat.mlm.layers) and mat.mlm.layers[0].material:
+            base = mat.mlm.layers[0].material
+            l.label(text=f"{mat.name} (Mixer layers on {base.name})", icon='MATERIAL')
+        else:
+            l.label(text=mat.name, icon='MATERIAL')
+        col = l.column(align=True)
+        _node_prop(col, base, 'NF:hsv', 'Hue', "Hue")
+        _node_prop(col, base, 'NF:hsv', 'Saturation', "Saturation")
+        _node_prop(col, base, 'NF:hsv', 'Value', "Brightness")
+        _node_prop(col, base, 'NF:ao', 'Factor', "AO Strength")
+        nd = base.node_tree.nodes.get('NF:rough') if base.node_tree else None
+        if nd is not None:
+            col.prop(nd.inputs[1], 'default_value', text="Roughness +/-")
+        _node_prop(col, base, 'NF:normal', 'Strength', "Normal Strength")
+        _node_prop(col, base, 'NF:disp', 'Scale', "Bump Scale")
+        op = l.operator('nf.hand_material', text="Rebuild Material", icon='FILE_REFRESH', emboss=False)
+        op.rebuild = True
         l.label(text="Viewport: Z > Material Preview", icon='INFO')
-        if hasattr(bpy.types, 'MLM_OT_stack_create'):
+        if hasattr(bpy.types, 'MLM_OT_stack_create') and not (hasattr(mat, 'mlm') and mat.mlm.is_stack):
             l.operator('mlm.stack_create', text="Paint More Layers (Mixer)", icon='BRUSH_DATA')
 
 
@@ -603,6 +678,8 @@ class NF_PT_hand(_Base, Panel):
             if ob is not None and nf_mod(ob) is None:
                 op = l.operator('nf.hand_start', text=f"Use '{ob.name}'", icon='RESTRICT_SELECT_OFF')
                 op.kind = 'SELECTED'
+                if ob.get('nf_final') or ob.data.attributes.get('nf_rest'):
+                    l.label(text="Its Forge paint layers would be lost", icon='ERROR')
             return
         H = ob.nf_hand
         box = l.box()
@@ -630,8 +707,13 @@ class NF_PT_hand(_Base, Panel):
             if i > 0:
                 op = nav.operator('nf.hand_goto', text="Back", icon='TRIA_LEFT')
                 op.step = i - 1
-            if i < len(handmade.STEPS) - 1:
-                op = nav.operator('nf.hand_goto', text="Next", icon='TRIA_RIGHT')
+            if key == 'SHAPE' and handmade.live_blockout(ob):
+                nav.operator('nf.hand_convert', text="Convert & Next", icon='TRIA_RIGHT')
+            elif key == 'SCULPT' and handmade.multires_of(ob) is not None:
+                nav.operator('nf.hand_sculpt_apply', text="Apply & Next", icon='TRIA_RIGHT')
+            elif i < len(handmade.STEPS) - 1:
+                op = nav.operator('nf.hand_goto', text="Skip" if key == 'SCULPT' and not
+                                  handmade.is_done(ob, 'SCULPT') else "Next", icon='TRIA_RIGHT')
                 op.step = i + 1
         l.operator('nf.hand_exit', icon='PANEL_CLOSE', emboss=False)
 
