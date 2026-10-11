@@ -1,0 +1,20 @@
+schema_version = "1.0.0"
+
+id = "nature_forge"
+version = "1.0.0"
+name = "Nature Forge"
+tagline = "Geometry Nodes rocks, cliffs, mountains and trees with auto texture sets"
+maintainer = "FC3_Extract"
+type = "add-on"
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+
+tags = ["Add Mesh", "Geometry Nodes", "Material", "Game Engine"]
+
+[permissions]
+files = "Scans your texture library folders and loads the texture images"
+
+[build]
+paths_exclude_pattern = ["__pycache__/", "/.git/", "*.zip", "*.blend1"]
