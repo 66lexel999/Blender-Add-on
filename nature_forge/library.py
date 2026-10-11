@@ -201,7 +201,9 @@ def _sid(path, key):
     return hashlib.md5(f"{os.path.normcase(path)}|{key}".encode('utf-8', 'replace')).hexdigest()[:12]
 
 
-def scan_dir(dirpath, files, root):
+def scan_dir(dirpath, files, root, members=None):
+    """members: if a dict, gets set id -> every picture file name (lower case) that belongs to that set, also the
+    ones it does not use (a DX normal next to the GL one, spec, cavity ...)"""
     imgs = sorted(f for f in files if f.lower().endswith(EXTS))
     if not imgs:
         return []
@@ -218,13 +220,14 @@ def scan_dir(dirpath, files, root):
     if present:
         keys = [classify(f)[0] for f in present]
         owner_key = max(set(keys), key=keys.count)
-    groups = {}
+    groups, member = {}, {}
     for f in imgs:
         key, chan, conv, explicit = classify(f)
         if f.lower() in listed:
             key, chan, explicit = owner_key, listed[f.lower()], True
         elif owner_key is not None and key == '':
             key = owner_key                           # generic names (preview.jpg, color.jpg) join the json set
+        member.setdefault(key, set()).add(f.lower())
         if chan == 'ignore':
             continue
         g = groups.setdefault(key, {'files': [], 'explicit_color': False})
@@ -288,6 +291,9 @@ def scan_dir(dirpath, files, root):
         name = inf.get('name') or (inf.get('id') if o['is_dir'] else None) or o['name']
         prev = o['preview'] or (spare_previews[0] if spare_previews and (o is owner or len(out) == 1) else None)
         maps = o['maps']
+        if members is not None:
+            members[_sid(dirpath, o['key'])] = member.get(o['key'], set()) | \
+                {os.path.basename(p).lower() for p in list(maps.values()) + [prev or '']}
         sets.append({'id': _sid(dirpath, o['key']), 'name': name, 'category': inf.get('category') or o['cat'] or
                      'Library', 'dir': dirpath, 'maps': maps, 'normal_dx': dx,
                      'preview': prev or maps.get('color') or maps.get('normal') or maps.get('height'), 'info': inf})
@@ -395,12 +401,12 @@ def set_from_files(directory, filenames):
         files = os.listdir(directory)
     except OSError:
         return []
-    found = scan_dir(directory, files, os.path.dirname(directory.rstrip('/\\')))
+    members = {}
+    found = scan_dir(directory, files, os.path.dirname(directory.rstrip('/\\')), members)
     if not filenames or len(found) <= 1:
         return found
     want = {f.lower() for f in filenames if f}
-    picked = [s for s in found if want & {os.path.basename(p).lower() for p in
-                                          list(s['maps'].values()) + [s.get('preview') or '']}]
+    picked = [s for s in found if want & members.get(s['id'], set())]   # any file of the set, used or not
     return picked or found
 
 

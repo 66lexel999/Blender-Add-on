@@ -102,10 +102,14 @@ Good to know:
 * **Next** always works. If a step needs an earlier one finished (Unwrap needs the blockout converted and the
   sculpt applied), it does that for you and tells you.
 * **Shift+D** a rock at any step to make a variation. The copy gets its own clouds, textures and material, so
-  changing one never changes the other.
+  changing one never changes the other. A material you link to several rocks yourself (Ctrl+L) stays shared
+  until you pick a different set for one of them.
 * Every rock has its own material (`<rock>_<set>`). Your node edits are kept until you press **Rebuild Material**
-  or pick a different set. With **Paint More Layers** (Material Layer Mixer), picking a set swaps only the base
-  layer; your Mixer layers stay.
+  or pick a different set. Other materials you add (moss on some faces...) keep their slots. With **Paint More
+  Layers** (Material Layer Mixer), picking a set swaps only the base layer; your Mixer layers stay. Opened
+  without the Mixer add-on, a layered material is never replaced: enable the Mixer to change it.
+* **Back to Blockout** only puts the mesh back. The object keeps its name, parent, children, animation, your own
+  modifiers and its material.
 
 ## 3. Texture it (automatic)
 

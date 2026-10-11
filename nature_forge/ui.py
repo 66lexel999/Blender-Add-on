@@ -90,7 +90,7 @@ class NF_PT_main(_Base, Panel):
             op.kind = k
         ob = ctx_ob(context)
         if ob is not None and nf_mod(ob) is None and not ob.get('nf_final') and not nf_materials(ob) and \
-                not ob.nf_hand.active:
+                not handmade.in_flow(ob):
             l.label(text="Rockify: your own model + texture height", icon='INFO')
 
 
@@ -618,10 +618,13 @@ def step_material(l, context, ob):
     _hint(l, "Colour x AO, roughness, metal, normal map", "and bump, all on the same UVs.")
     done = handmade.is_done(ob, 'MATERIAL')
     _big(l, 'nf.hand_material', "Add All Textures" if not done else "Use These Textures", 'MATERIAL')
-    mat = ob.active_material
+    mat = handmade.rock_material(ob)
     if done and mat is not None:
         base = mat
         stack = hasattr(mat, 'mlm') and mat.mlm.is_stack
+        if handmade._is_stack(mat) and not stack:
+            l.label(text=f"{mat.name}: enable the Material Layer Mixer to edit it", icon='ERROR')
+            return
         if stack and len(mat.mlm.layers) and mat.mlm.layers[0].material:
             base = mat.mlm.layers[0].material
             l.label(text=f"{mat.name} (Mixer layers on {base.name})", icon='MATERIAL')
@@ -642,7 +645,7 @@ def step_material(l, context, ob):
         op = l.operator('nf.hand_material', text="Rebuild Material", icon='FILE_REFRESH', emboss=False)
         op.rebuild = True
         l.label(text="Viewport: Z > Material Preview", icon='INFO')
-        if hasattr(bpy.types, 'MLM_OT_stack_create') and not (hasattr(mat, 'mlm') and mat.mlm.is_stack):
+        if hasattr(bpy.types, 'MLM_OT_stack_create') and not stack:
             l.operator('mlm.stack_create', text="Paint More Layers (Mixer)", icon='BRUSH_DATA')
 
 

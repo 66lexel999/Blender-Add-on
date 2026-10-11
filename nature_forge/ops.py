@@ -223,12 +223,14 @@ class NF_OT_rockify(Operator):
 
     @classmethod
     def poll(cls, context):
-        return any(o.type == 'MESH' and nf_mod(o) is None and not o.nf_hand.active for o in context.selected_objects)
+        from .handmade import in_flow
+        return any(o.type == 'MESH' and nf_mod(o) is None and not in_flow(o) for o in context.selected_objects)
 
     def execute(self, context):
         n = 0
+        from .handmade import in_flow
         for ob in [o for o in context.selected_objects if o.type == 'MESH' and nf_mod(o) is None
-                   and not o.nf_hand.active]:
+                   and not in_flow(o)]:
             rockify(context, ob)
             n += 1
         self.report({'INFO'}, f"Rockified {n} object(s) - pick a texture set in Texture Library")
@@ -442,11 +444,11 @@ class NF_OT_apply_set(Operator):
         if ts is None:
             self.report({'ERROR'}, "Pick a texture set in the Texture Library first")
             return {'CANCELLED'}
-        if ob.nf_hand.active:                           # a Step by Step rock: hand the set to the guide
+        from . import handmade
+        if handmade.in_flow(ob):                        # a Step by Step rock: hand the set to the guide
             if self.layer > 0:
                 self.report({'ERROR'}, "Step by Step rocks use one texture set: the box at the top of Step by Step")
                 return {'CANCELLED'}
-            from . import handmade
             return {'FINISHED'} if handmade.use_set(context, ob, ts, self.report) else {'CANCELLED'}
         mat = _mat_by_name(self.material) or (nf_materials(ob)[0][1] if nf_materials(ob) else None)
         if mat is None:
@@ -489,8 +491,8 @@ class NF_OT_apply_set_file(Operator):
             self.report({'ERROR'}, "No texture set found there (need at least a colour, normal or height map)")
             return {'CANCELLED'}
         ts = found[0]
-        if ob is not None and ob.nf_hand.active:
-            from . import handmade
+        from . import handmade
+        if handmade.in_flow(ob):
             return {'FINISHED'} if handmade.use_set(context, ob, ts, self.report) else {'CANCELLED'}
         mat = _mat_by_name(self.material) or (nf_materials(ob)[0][1] if ob and nf_materials(ob) else None)
         if mat is None:

@@ -72,8 +72,36 @@ def ctx_ob(context):
     return ob if ob is not None and ob.type == 'MESH' else None
 
 
+def hand(o):
+    """o.nf_hand, or None when the object never had one. Blender 4.2 writes an empty group into any object whose
+    nf_hand is merely read, so scans over the whole file must not touch it on plain objects (5.x keeps add-on
+    data apart from the custom properties: nothing shows up there)"""
+    if hasattr(o, 'bl_system_properties_get'):
+        return o.nf_hand
+    return o.nf_hand if o.get('nf_hand') is not None else None
+
+
 def in_flow(ob):
-    return ob is not None and ob.type == 'MESH' and ob.nf_hand.active
+    if ob is None or ob.type != 'MESH':
+        return False
+    h = hand(ob)
+    return h is not None and h.active
+
+
+def _linked(o):
+    """data from a library (linked or a library override): never ours to change"""
+    return o.library is not None or o.override_library is not None or \
+        (o.data is not None and getattr(o.data, 'library', None) is not None)
+
+
+def _is_stack(m):
+    """a Material Layer Mixer layered material - recognised also while the Mixer add-on is off (its node tree
+    keeps the Mixer's output node), so it is never mistaken for a plain material and replaced"""
+    if m is None:
+        return False
+    if hasattr(m, 'mlm'):
+        return bool(m.mlm.is_stack)
+    return m.node_tree is not None and m.node_tree.nodes.get('MLM::out') is not None
 
 
 def avg_dim(ob):
@@ -111,8 +139,10 @@ def faces_now(context, ob):
     try:
         n = len(ob.evaluated_get(context.evaluated_depsgraph_get()).data.polygons)
     except (RuntimeError, ReferenceError):
-        n = 0
-    return n or len(ob.data.polygons)
+        return len(ob.data.polygons)
+    if n == 0 and ob.mode == 'EDIT':
+        return len(ob.data.polygons)                  # edit mode may not hand out the evaluated faces
+    return n
 
 
 def mark_done(ob, key, done=True):
@@ -155,7 +185,8 @@ def apply_modifier(context, ob, name):
         except RuntimeError as e:
             raise StepError(f"Could not apply '{name}': {str(e).splitlines()[-1].replace('Error: ', '')}")
     if ob.modifiers.get(name) is not None:              # Blender only warned ('disabled, skipping apply')
-        raise StepError(f"Could not apply '{name}' (it is disabled or failed)")
+        hint = ": its Voxel Size may be too big for the rock" if name == M_REMESH else " (it is disabled or failed)"
+        raise StepError(f"Could not apply '{name}'{hint}")
 
 
 def apply_through(context, ob, last_names):
@@ -301,19 +332,33 @@ def clouds_texture(ob, create=False):
 
 def _texture_users(tex, ob):
     """other objects whose modifiers use this texture"""
-    return [o for o in bpy.data.objects if o != ob and o.type == 'MESH' and
+    return [o for o in bpy.data.objects if o != ob and o.type == 'MESH' and o.library is None and
             any(getattr(m, 'texture', None) == tex for m in o.modifiers)]
 
 
-def _shared_material(m, ob):
-    return m is not None and any(o != ob and o.type == 'MESH' and m in [s.material for s in o.material_slots]
-                                 for o in bpy.data.objects if o.users)
+def _material_users(m, ob):
+    """other objects showing material m. Alt+D twins of ob (same mesh: one slot for both), kept blockout copies and
+    linked objects don't count - those can't or shouldn't get a copy of their own"""
+    return [o for o in bpy.data.objects if o != ob and o.type == 'MESH' and o.users and o.library is None and
+            o.data != ob.data and not o.get('nf_backup') and any(s.material == m for s in o.material_slots)]
 
 
-def ensure_own(ob, keep_world=True):
+def _copy_material(m):
+    cp = m.copy()
+    if hasattr(m, 'mlm') and m.mlm.is_stack and len(m.mlm.layers) and m.mlm.layers[0].material and \
+            m.mlm.layers[0].material.get('nf_hand_mat'):
+        cp.mlm.layers[0].material = m.mlm.layers[0].material.copy()
+    return cp
+
+
+def ensure_own(ob, keep_world=True, materials=None, textures=None):
     """a Shift+D copy shares the hidden offset empty, the textures and the rock's material with the original:
     give it its own, so tweaking one rock never changes the other. keep_world: the copy keeps exactly the look it
-    has right now"""
+    has right now. materials: {material: objects that had it before the copy was made} - only a NEW object gets
+    its own material that way (a material you linked to several rocks on purpose stays shared). textures:
+    {texture: objects using it}, built once when many objects are checked"""
+    if _linked(ob):
+        return
     dp = ob.modifiers.get(M_CLOUDS)
     e = ob.nf_hand.noise_object
     if e is not None and e.name in bpy.data.objects and e.parent != ob:
@@ -331,17 +376,19 @@ def ensure_own(ob, keep_world=True):
             dp.texture_coords_object = e2
     for name in (M_CLOUDS, M_DETAIL):
         md = ob.modifiers.get(name)
-        if md is not None and md.texture is not None and _texture_users(md.texture, ob):
-            md.texture = md.texture.copy()
-    me = ob.data
-    for i, m in enumerate(me.materials):
-        if m is not None and (m.get('nf_hand_mat') or (hasattr(m, 'mlm') and m.mlm.is_stack)) and \
-                _shared_material(m, ob):
-            cp = m.copy()
-            if hasattr(m, 'mlm') and m.mlm.is_stack and len(m.mlm.layers) and m.mlm.layers[0].material and \
-                    m.mlm.layers[0].material.get('nf_hand_mat'):
-                cp.mlm.layers[0].material = m.mlm.layers[0].material.copy()
-            me.materials[i] = cp
+        if md is None or md.texture is None:
+            continue
+        old = md.texture
+        users = [o for o in textures.get(old, ()) if o != ob] if textures is not None else _texture_users(old, ob)
+        if users:
+            md.texture = old.copy()
+            if textures is not None and ob in textures.get(old, ()):
+                textures[old].remove(ob)
+    if materials is not None:
+        me = ob.data
+        for i, m in enumerate(me.materials):
+            if (_is_hand_mat(m) or _is_stack(m)) and any(o != ob and o.data != me for o in materials.get(m, ())):
+                me.materials[i] = _copy_material(m)
     b = ob.nf_hand.backup
     if b is not None and (not _alive(b) or b.nf_hand.owner != ob):
         ob.nf_hand.backup = None                       # a copy of a rock does not own the rock's blockout copy
@@ -385,23 +432,42 @@ def upd_clouds(self, context):
     sync_clouds(self.id_data)
 
 
-def _empty_used(e):
+def _used_empties():
+    """every object some rock uses as its clouds offset (one pass over the file)"""
+    used = set()
     for o in bpy.data.objects:
-        if o.type == 'MESH' and o.users and (o.nf_hand.noise_object == e or any(
-                m.type == 'DISPLACE' and m.texture_coords_object == e for m in o.modifiers)):
-            return True
-    return False
+        if o.type != 'MESH' or not o.users:
+            continue
+        h = hand(o)
+        if h is not None and h.noise_object is not None:
+            used.add(h.noise_object)
+        for m in o.modifiers:
+            if m.type == 'DISPLACE' and m.texture_coords_object is not None:
+                used.add(m.texture_coords_object)
+    return used
+
+
+def _empty_used(e):
+    return e in _used_empties()
 
 
 def cleanup_orphans():
     """offset empties nobody uses any more, blockout copies whose rock is gone"""
-    for b in [o for o in bpy.data.objects if o.type == 'MESH' and o.get('nf_backup') and not o.nf_hand.active]:
+    backups, empties = [], []
+    for o in bpy.data.objects:
+        if o.type == 'MESH' and o.get('nf_backup'):
+            backups.append(o)
+        elif o.type == 'EMPTY' and o.name.startswith(EMPTY_PREFIX):
+            empties.append(o)
+    for b in backups:
         own = b.nf_hand.owner
-        if not _alive(own) or own.nf_hand.backup != b:
+        if not b.nf_hand.active and (not _alive(own) or own.nf_hand.backup != b):
             remove_object(b)
-    for e in [o for o in bpy.data.objects if o.type == 'EMPTY' and o.name.startswith(EMPTY_PREFIX)]:
-        if not _empty_used(e):
-            bpy.data.objects.remove(e)
+    if empties:
+        used = _used_empties()
+        for e in empties:
+            if e.name in bpy.data.objects and e not in used:
+                bpy.data.objects.remove(e)
 
 
 def upd_uv_size(self, context):
@@ -500,9 +566,7 @@ def infer_state(ob):
         H['uv_size'] = H['uv_applied']
     if ob.modifiers.get(M_DETAIL) is not None or ob.get('nf_applied'):
         mark_done(ob, 'DETAIL')
-    if any(s.material is not None and (s.material.get('nf_hand_mat') or
-                                       (hasattr(s.material, 'mlm') and s.material.mlm.is_stack))
-           for s in ob.material_slots):
+    if any(_is_hand_mat(s.material) or _is_stack(s.material) for s in ob.material_slots):
         mark_done(ob, 'MATERIAL')
     if ob.get('nf_applied'):
         mark_done(ob, 'FINISH')
@@ -515,6 +579,24 @@ def infer_state(ob):
     else:
         H.step = next((i for i, k in enumerate(STEP_KEYS) if not is_done(ob, k) and k != 'SCULPT'),
                       len(STEPS) - 1)
+
+
+def _take_backup(context, ob):
+    """out of the hidden copies collection (next to the rock it was kept for), visible and rendering again"""
+    own = ob.nf_hand.owner
+    dest = list(own.users_collection) if _alive(own) else []
+    dest = [c for c in dest if c.name != BACKUPS] or [context.collection or context.scene.collection]
+    keep = bpy.data.collections.get(BACKUPS)
+    e = ob.nf_hand.noise_object
+    for o in (ob, e):
+        if o is None or o.name not in bpy.data.objects:
+            continue
+        for c in dest:
+            if o.name not in c.objects:
+                c.objects.link(o)
+        if keep is not None and o.name in keep.objects:
+            keep.objects.unlink(o)
+    unhide(ob)
 
 
 def _from_nf(ob):
@@ -545,9 +627,11 @@ def start(context, kind, report=None):
                 bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
             if report:
                 report({'INFO'}, "Applied the object scale, so voxels and texture size are in real metres")
+        if ob.get('nf_backup'):
+            _take_backup(context, ob)                     # a kept blockout copy taken into the guide is a rock now
         for k in ('nf_final', 'nf_kind', 'nf_preset', 'nf_backup'):
             if k in ob:
-                del ob[k]                                 # a kept blockout copy taken into the guide is a rock now
+                del ob[k]
         if H.owner is not None:
             own = H.owner
             if _alive(own) and own.nf_hand.backup == ob:
@@ -755,6 +839,13 @@ def convert(context, ob, keep_copy, report=None):
         if cp is not None:
             remove_object(cp)
         raise
+    if not len(tmp.data.polygons):
+        tm = tmp.data
+        bpy.data.objects.remove(tmp)
+        bpy.data.meshes.remove(tm)
+        if cp is not None:
+            remove_object(cp)
+        raise StepError("The Remesh leaves nothing: make its Voxel Size smaller than the rock")
     old_me = ob.data
     ob.data = tmp.data
     bpy.data.objects.remove(tmp)
@@ -798,50 +889,99 @@ def ensure_converted(context, ob, report=None):
             report({'INFO'}, "Converted the blockout to a mesh first")
 
 
+CLOUD_KEYS = ('seed', 'cloud_size', 'cloud_stretch', 'cloud_detail', 'cloud_contrast', 'cloud_basis', 'cloud_hard',
+              'cloud_twist', 'chunk_size', 'chunk_shape', 'chunk_seed')
+
+
+def _copy_modifier(src, ob):
+    """the same modifier, with all its settings, on another object"""
+    m = ob.modifiers.new(src.name, src.type)
+    m.name = src.name
+    for p in src.bl_rna.properties:
+        k = p.identifier
+        if p.is_readonly or k in ('name', 'type', 'rna_type', 'is_active', 'persistent_uid'):
+            continue
+        try:
+            setattr(m, k, getattr(src, k))
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            pass
+    try:
+        for k in src.keys():                               # geometry nodes inputs live in ID properties
+            m[k] = src[k]
+    except (TypeError, KeyError, ValueError):
+        pass
+    return m
+
+
 def back_to_blockout(context, ob):
-    """replace the converted rock by its hidden live blockout copy (same seed and sliders); the rock's material and
-    texture set carry over. The converted mesh is removed (Ctrl+Z brings it back)"""
+    """bring the live blockout kept at Convert back INTO this rock. The object stays what it is (name, parent,
+    children, constraints, animation, your own modifiers, materials and texture set); only its mesh goes back to the
+    blockout and the Remesh + Clouds return on top with the same seed and sliders. Sculpt, UVs and rock detail
+    are dropped (Ctrl+Z brings them back)"""
     cp = backup_of(ob)
     if cp is None:
         raise StepError("No blockout copy kept for this object")
     object_mode(context)
-    name, mw, colls = ob.name, ob.matrix_world.copy(), list(ob.users_collection)
-    mats = list(ob.data.materials)
-    set_json, kind = ob.nf_hand.set_json, ob.nf_hand.kind
-    for c in list(cp.users_collection):
-        c.objects.unlink(cp)
-    for c in colls:
-        c.objects.link(cp)
+    H = ob.nf_hand
+    names = [m.name for m in cp.modifiers]
+    nf = [names.index(n) for n in (M_REMESH, M_CLOUDS) if n in names]
+    top = names[:max(nf) + 1] if nf else []            # what Convert applied: the blockout and anything above it
+    for m in list(ob.modifiers):
+        if m.name in (M_MULTIRES, M_SUBDIV, M_DETAIL) or m.type == 'MULTIRES':
+            ob.modifiers.remove(m)                     # made for the converted mesh
+    # the blockout mesh, with the rock's current materials (the same slot count keeps per-object slots)
+    old_me, me = ob.data, cp.data
+    me.materials.clear()
+    for m in old_me.materials:
+        me.materials.append(m)
+    ob.data = me
+    name = old_me.name
+    if old_me.users == 0:
+        bpy.data.meshes.remove(old_me)
+        me.name = name
+    for n in top:
+        if ob.modifiers.get(n) is None:
+            _copy_modifier(cp.modifiers[n], ob)
+    for i, n in enumerate(top):
+        move_to_index(context, ob, n, i)
     e = cp.nf_hand.noise_object
     if e is not None and e.name in bpy.data.objects:
-        for c in list(e.users_collection):
-            c.objects.unlink(e)
-        for c in colls:
-            c.objects.link(e)
-    ob.nf_hand.backup = None
-    remove_object(ob)
-    if 'nf_backup' in cp:
-        del cp['nf_backup']
-    cp.nf_hand.owner = None
-    cp.name = name
-    cp.matrix_world = mw
-    unhide(cp)
-    if mats:
-        cp.data.materials.clear()
-        for m in mats:
-            cp.data.materials.append(m)
+        keep = bpy.data.collections.get(BACKUPS)
+        for c in ob.users_collection:
+            if e.name not in c.objects:
+                c.objects.link(e)
+        if keep is not None and e.name in keep.objects and keep not in ob.users_collection:
+            keep.objects.unlink(e)
+        e.parent = ob                                  # same local offset: the pattern sits on the rock as before
+        e.name = f"{EMPTY_PREFIX} ({ob.name})"
+        H.noise_object = e
+        dp = ob.modifiers.get(M_CLOUDS)
+        if dp is not None:
+            dp.texture_coords_object = e
+    for k in CLOUD_KEYS:
+        v = cp.nf_hand.get(k)
+        if v is not None:
+            H[k] = v
+        elif k in H:
+            del H[k]
+    cp.nf_hand.noise_object = None
+    H.backup = None
+    bpy.data.objects.remove(cp)
+    for k in ('nf_converted', 'nf_sculpted', 'nf_applied'):
+        if k in ob:
+            del ob[k]
+    for k in ('uv_applied', 'detail_set'):
+        if k in H:
+            del H[k]
+    H.done = 0
+    mark_done(ob, 'BLOCKOUT')
+    H.step = 0
+    sync_clouds(ob)
     for o in context.selected_objects:
         o.select_set(False)
-    cp.select_set(True)
-    context.view_layer.objects.active = cp
-    H = cp.nf_hand
-    H.active = True
-    H.kind = kind or H.kind
-    H.set_json = set_json or H.set_json                 # the latest pick wins
-    H.done = 0
-    mark_done(cp, 'BLOCKOUT')
-    H.step = 0
-    return cp
+    ob.select_set(True)
+    context.view_layer.objects.active = ob
+    return ob
 
 
 def sculpt_start(context, ob, report=None):
@@ -1040,26 +1180,46 @@ def mlm_refresh(stack):
 
 
 def mlm_stack(ob):
-    return next((m for m in ob.data.materials if m is not None and hasattr(m, 'mlm') and m.mlm.is_stack), None)
+    return next((m for m in ob.data.materials if _is_stack(m)), None)
+
+
+def rock_material(ob):
+    """the material the guide made for this rock (its Mixer stack, or the plain one)"""
+    return mlm_stack(ob) or next((m for m in ob.data.materials if _is_hand_mat(m)), None)
+
+
+def check_stack(ob):
+    stack = mlm_stack(ob)
+    if stack is not None and not hasattr(stack, 'mlm'):
+        raise StepError(f"'{stack.name}' is a Material Layer Mixer material: enable the Material Layer Mixer "
+                        f"add-on to change it")
+    return stack
 
 
 def material(context, ob, rebuild=False, report=None, auto=True):
-    """the rock's own material (never the shared library asset; a Shift+D copy gets its own first). A Mixer layered
-    material keeps its layers and only gets the new base. auto=False: don't convert / unwrap for it"""
+    """the rock's own material (never the shared library asset; a material other rocks use too is copied, not
+    changed). A Mixer layered material keeps its layers and only gets the new base. Only the rock material's
+    slots are touched: your other materials stay. auto=False: don't convert / unwrap for it"""
     ts = need_set(ob)
+    check_stack(ob)
     if auto:
         ensure_converted(context, ob, report)
         if ob.data.uv_layers.get('UVMap') is None:
             unwrap(context, ob, report)
     ensure_own(ob)
     me = ob.data
-    slots = list(me.materials)
     stack = mlm_stack(ob)
     if stack is not None and len(stack.mlm.layers):
         base = stack.mlm.layers[0]
         cur = base.material if base.source_type == 'MATERIAL' else None
         if _is_hand_mat(cur, ts['id']) and not rebuild:
             return stack
+        if _material_users(stack, ob):                  # other rocks show this stack: this one gets its own
+            old, stack = stack, stack.copy()
+            for i, m in enumerate(me.materials):
+                if m == old:
+                    me.materials[i] = stack
+            base = stack.mlm.layers[0]
         # a NEW datablock: the Mixer only regenerates a layer when its source changes
         mat = shading.asset_material(ts, mark_asset=False, hand=True)
         mat.name = f"{ob.name}_{ts['name']}"
@@ -1072,19 +1232,32 @@ def material(context, ob, rebuild=False, report=None, auto=True):
             bpy.data.materials.remove(cur)
         mark_done(ob, 'MATERIAL')
         return stack
-    cur = next((m for m in slots if _is_hand_mat(m)), None)
+    hand_slots = [i for i, m in enumerate(me.materials) if _is_hand_mat(m)]
+    cur = me.materials[hand_slots[0]] if hand_slots else None
     if _is_hand_mat(cur, ts['id']) and not rebuild:
         mat = cur                                            # keep the user's node edits
     else:
-        mat = shading.asset_material(ts, mark_asset=False, mat=cur, hand=True)
+        reuse = cur if cur is not None and not _material_users(cur, ob) else None
+        mat = shading.asset_material(ts, mark_asset=False, mat=reuse, hand=True)
         mat.name = f"{ob.name}_{ts['name']}"
     if hasattr(mat, 'displacement_method'):
         mat.displacement_method = 'BUMP'                 # the modifier already displaced: shader adds bump only
-    if len(me.materials):
-        for i in range(len(me.materials)):
+    if hand_slots:
+        for i in hand_slots:
             me.materials[i] = mat
+    elif not any(m is not None for m in me.materials):
+        if len(me.materials):
+            for i in range(len(me.materials)):
+                me.materials[i] = mat
+        else:
+            me.materials.append(mat)
     else:
-        me.materials.append(mat)
+        me.materials.append(mat)                         # your own materials keep their slots
+        n = len(me.materials) - 1
+        me.polygons.foreach_set('material_index', [n] * len(me.polygons))
+        me.update()
+        if report:
+            report({'INFO'}, "Added the rock material as a new slot; your other materials are kept in theirs")
     mark_done(ob, 'MATERIAL')
     return mat
 
@@ -1113,6 +1286,12 @@ def use_set(context, ob, ts, report):
     if miss:
         report({'ERROR'}, f"Texture files missing in '{os.path.dirname(miss[0])}': rescan the library")
         return False
+    if is_done(ob, 'MATERIAL'):
+        try:
+            check_stack(ob)
+        except StepError as e:
+            report({'ERROR'}, str(e))
+            return False
     old = texture_set(ob)
     changed = old is None or old.get('id') != ts.get('id')
     store_set(ob, ts)
@@ -1300,8 +1479,9 @@ class NF_OT_hand_convert(_Op, Operator):
 class NF_OT_hand_back_blockout(_Op, Operator):
     bl_idname = 'nf.hand_back_blockout'
     bl_label = "Back to Blockout"
-    bl_description = ("Bring back the live Remesh + Clouds copy kept by 'Convert to Mesh' (same seed and sliders, "
-                      "your material and texture set carry over). It replaces the converted rock")
+    bl_description = ("Bring back the live Remesh + Clouds kept by 'Convert to Mesh' (same seed and sliders). Only "
+                      "the mesh goes back: the object, its parent, children, your own modifiers, material and "
+                      "texture set stay")
 
     @classmethod
     def poll(cls, context):
@@ -1309,7 +1489,7 @@ class NF_OT_hand_back_blockout(_Op, Operator):
         return in_flow(ob) and backup_of(ob) is not None
 
     def invoke(self, context, event):
-        msg = "Replace this rock (its sculpt, UVs and rock detail) with the live blockout? Ctrl+Z undoes it"
+        msg = "Go back to the live blockout? The sculpt, UVs and rock detail are dropped (Ctrl+Z undoes it)"
         return context.window_manager.invoke_confirm(self, event, message=msg) \
             if bpy.app.version >= (4, 1, 0) else context.window_manager.invoke_confirm(self, event)
 
@@ -1541,25 +1721,71 @@ def _cleanup_timer():
 
 
 _COUNT = {'objects': -1}
+_KNOWN = {'uids': None}                                   # session ids of the objects seen so far
+
+
+def _snapshot():
+    _KNOWN['uids'] = {o.session_uid for o in bpy.data.objects}
+    _COUNT['objects'] = len(bpy.data.objects)
 
 
 @persistent
 def _on_load(*_):
-    _COUNT['objects'] = len(bpy.data.objects)
+    _snapshot()
     _cleanup_timer()
 
 
-def _own_timer():
-    """after a Shift+D: every Step by Step rock gets its own hidden clouds offset, textures and material right away,
-    so a copy looks exactly like the original and then moves / changes on its own"""
+@persistent
+def _on_undo(*_):
+    _snapshot()                                        # objects an undo brings back are not new copies
+
+
+def _init_timer():
     try:
-        rocks = sorted((o for o in bpy.data.objects if o.type == 'MESH' and o.users and
-                        (o.nf_hand.active or o.nf_hand.noise_object is not None)), key=lambda o: o.name,
-                       reverse=True)                     # 'Rock.001' before 'Rock': the copy takes the copies
+        if _KNOWN['uids'] is None:
+            _snapshot()
+    except (AttributeError, RuntimeError):
+        return 0.5                                     # data not ready yet (add-on enabled at startup)
+    return None
+
+
+def _own_timer():
+    """after a Shift+D / paste / append: a NEW Step by Step rock gets its own hidden clouds offset, textures and
+    material right away, so a copy looks exactly like the original and then moves / changes on its own. Rocks that
+    were already there are left alone (a material you linked to several rocks stays shared)"""
+    try:
+        known = _KNOWN['uids']
+        if known is None:
+            _snapshot()
+            return None
+        new = [o for o in bpy.data.objects if o.session_uid not in known]
+        fresh = {o.session_uid for o in new}
+        known.update(fresh)
+        rocks = []
+        for o in new:
+            if o.type != 'MESH' or not o.users or o.get('nf_backup') or _linked(o):
+                continue
+            h = hand(o)
+            if h is not None and (h.active or h.noise_object is not None):
+                rocks.append(o)
+        if not rocks:
+            return None
+        rocks.sort(key=lambda o: o.name, reverse=True)   # 'Rock.001' before 'Rock': the copy takes the copies
+        before, textures = {}, {}                      # material -> objects that had it before; texture -> users
+        for o in bpy.data.objects:
+            if o.type != 'MESH' or not o.users or o.library is not None:
+                continue
+            for m in o.modifiers:
+                t = getattr(m, 'texture', None)
+                if t is not None:
+                    textures.setdefault(t, []).append(o)
+            if o.session_uid not in fresh and not o.get('nf_backup'):
+                for sl in o.material_slots:
+                    if sl.material is not None:
+                        before.setdefault(sl.material, []).append(o)
         for o in rocks:
-            if not o.get('nf_backup'):
-                ensure_own(o, keep_world=False)
-    except (RuntimeError, ReferenceError):
+            ensure_own(o, keep_world=False, materials=before, textures=textures)
+    except (RuntimeError, ReferenceError, AttributeError):
         pass
     return None
 
@@ -1568,6 +1794,9 @@ def _own_timer():
 def _on_depsgraph(scene, depsgraph):
     """objects deleted: remove orphaned offsets / copies; objects added (Shift+D): give copies their own data.
     Both from a timer, never inside the depsgraph update"""
+    if _KNOWN['uids'] is None:
+        _snapshot()
+        return
     n = len(bpy.data.objects)
     if n < _COUNT['objects'] and not bpy.app.timers.is_registered(_cleanup_timer):
         bpy.app.timers.register(_cleanup_timer, first_interval=0.05)
@@ -1584,16 +1813,27 @@ def register():
         bpy.app.handlers.load_post.append(_on_load)
     if _on_depsgraph not in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph)
+    for hs in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
+        if _on_undo not in hs:
+            hs.append(_on_undo)
+    _KNOWN['uids'] = None
+    try:
+        _snapshot()
+    except AttributeError:                             # enabled at startup: bpy.data is not there yet
+        bpy.app.timers.register(_init_timer, first_interval=0.1)
 
 
 def unregister():
     if _on_depsgraph in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.remove(_on_depsgraph)
-    for fn in (_cleanup_timer, _own_timer):
+    for fn in (_cleanup_timer, _own_timer, _init_timer):
         if bpy.app.timers.is_registered(fn):
             bpy.app.timers.unregister(fn)
     if _on_load in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_on_load)
+    for hs in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
+        if _on_undo in hs:
+            hs.remove(_on_undo)
     del bpy.types.Object.nf_hand
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)
