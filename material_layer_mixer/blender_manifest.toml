@@ -1,0 +1,20 @@
+schema_version = "1.0.0"
+
+id = "material_layer_mixer"
+version = "1.4.0"
+name = "Material Layer Mixer"
+tagline = "Layer, mask and paint whole materials, then bake for Roblox"
+maintainer = "FC3_Extract"
+type = "add-on"
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+
+tags = ["Material", "Paint", "Bake", "Game Engine"]
+
+[permissions]
+files = "Loads texture sets and saves baked textures / exports"
+
+[build]
+paths_exclude_pattern = ["__pycache__/", "/.git/", "*.zip", "*.blend1"]
